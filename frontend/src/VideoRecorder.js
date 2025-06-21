@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
-
-const VideoRecorder = () => {
+import { saveVideoBlob } from "./videoDB";
+const VideoRecorder = ({ onRecordingComplete }) => {
   const videoRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const [recording, setRecording] = useState(false);
@@ -8,11 +8,9 @@ const VideoRecorder = () => {
   const recordedChunks = useRef([]);
 
   const startRecording = async () => {
-    // Gets access to webcam and mic.
     const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
     videoRef.current.srcObject = stream;
-    // Initializes a new media recorder.
-    // Clears previously recorded chunks.
+
     mediaRecorderRef.current = new MediaRecorder(stream);
     recordedChunks.current = [];
 
@@ -21,20 +19,26 @@ const VideoRecorder = () => {
         recordedChunks.current.push(event.data);
       }
     };
-    // When recording stops, create a blob from the recorded chunks and set the video URL.
-    mediaRecorderRef.current.onstop = () => {
+
+    mediaRecorderRef.current.onstop = async () => {
       const blob = new Blob(recordedChunks.current, { type: "video/webm" });
       const url = URL.createObjectURL(blob);
       setRecordedVideoURL(url);
 
-      // Stop webcam stream
+       const key = `video-${Date.now()}`;
+       await saveVideoBlob(key, blob);
+
+      if (onRecordingComplete) {
+        onRecordingComplete(url);
+      }
+
       stream.getTracks().forEach(track => track.stop());
     };
-    // Start recording.
+
     mediaRecorderRef.current.start();
     setRecording(true);
   };
-// Stops the recording and sets the recorded video URL.
+
   const stopRecording = () => {
     mediaRecorderRef.current.stop();
     setRecording(false);
@@ -42,10 +46,9 @@ const VideoRecorder = () => {
 
   return (
     <div>
-      <h2>Video Recorder</h2>
+      <h3>Video Recorder</h3>
       <video ref={videoRef} autoPlay muted style={{ width: "400px" }} />
       <div>
-        
         {!recording ? (
           <button onClick={startRecording}>Start Recording</button>
         ) : (
@@ -54,7 +57,7 @@ const VideoRecorder = () => {
       </div>
       {recordedVideoURL && (
         <div>
-          <h3>Preview:</h3>
+          <h4>Preview:</h4>
           <video src={recordedVideoURL} controls style={{ width: "400px" }} />
         </div>
       )}

@@ -1,7 +1,6 @@
 import React, { useState } from "react";
-import VideoRecorder from "./VideoRecorder";
 
-const JournalForm = () => {
+const JournalForm = ({ videoUrl }) => {
   const [title, setTitle] = useState("");
   const [tags, setTags] = useState("");
   const [message, setMessage] = useState("");
@@ -20,7 +19,7 @@ const JournalForm = () => {
         body: JSON.stringify({
           title,
           tags: tagArray,
-          videoUrl: "local-only", // placeholder to indicate local storage
+          videoUrl: videoUrl || "no-video", 
         }),
       });
 
@@ -39,9 +38,7 @@ const JournalForm = () => {
 
   return (
     <div className="p-4 max-w-xl mx-auto space-y-4">
-      <h2 className="text-xl font-bold mb-2">Create Video Journal Entry</h2>
-      
-      <VideoRecorder />
+      <h3 className="text-xl font-bold mb-2">Create Video Journal Entry</h3>
 
       <form onSubmit={handleSubmit} className="space-y-4">
         <input
