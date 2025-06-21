@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 
-const JournalForm = ({ videoUrl }) => {
+const JournalForm = ({ videoKey }) => {
   const [title, setTitle] = useState("");
   const [tags, setTags] = useState("");
   const [message, setMessage] = useState("");
@@ -19,7 +19,7 @@ const JournalForm = ({ videoUrl }) => {
         body: JSON.stringify({
           title,
           tags: tagArray,
-          videoUrl: videoUrl || "no-video", 
+          videoUrl: videoKey || "no-video"
         }),
       });
 
@@ -38,8 +38,6 @@ const JournalForm = ({ videoUrl }) => {
 
   return (
     <div className="p-4 max-w-xl mx-auto space-y-4">
-      <h3 className="text-xl font-bold mb-2">Create Video Journal Entry</h3>
-
       <form onSubmit={handleSubmit} className="space-y-4">
         <input
           type="text"

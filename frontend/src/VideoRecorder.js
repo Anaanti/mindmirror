@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { saveVideoBlob } from "./videoDB";
+
 const VideoRecorder = ({ onRecordingComplete }) => {
   const videoRef = useRef(null);
   const mediaRecorderRef = useRef(null);
@@ -8,7 +9,10 @@ const VideoRecorder = ({ onRecordingComplete }) => {
   const recordedChunks = useRef([]);
 
   const startRecording = async () => {
-    const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: true,
+      audio: true,
+    });
     videoRef.current.srcObject = stream;
 
     mediaRecorderRef.current = new MediaRecorder(stream);
@@ -25,14 +29,14 @@ const VideoRecorder = ({ onRecordingComplete }) => {
       const url = URL.createObjectURL(blob);
       setRecordedVideoURL(url);
 
-       const key = `video-${Date.now()}`;
-       await saveVideoBlob(key, blob);
+      const key = `video-${Date.now()}`;
+      await saveVideoBlob(key, blob); 
 
       if (onRecordingComplete) {
-        onRecordingComplete(url);
+        onRecordingComplete(key); 
       }
 
-      stream.getTracks().forEach(track => track.stop());
+      stream.getTracks().forEach((track) => track.stop());
     };
 
     mediaRecorderRef.current.start();

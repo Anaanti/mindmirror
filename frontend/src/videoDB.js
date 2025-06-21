@@ -21,7 +21,8 @@ export async function saveVideoBlob(key, blob){
 
 }
 
-export async function getVideoBlob(key){
+export async function getVideoBlob(key) {
   const db = await dbPromise;
-  return db.get(STORE_NAME, key);
+  const result = await db.get(STORE_NAME, key);
+  return result?.blob || null;
 }
