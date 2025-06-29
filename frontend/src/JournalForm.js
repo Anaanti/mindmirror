@@ -1,6 +1,6 @@
-import React, { useState } from "react";
+import { useState } from "react";
 
-const JournalForm = ({ videoKey }) => {
+const JournalForm = ({ videoKey, onEntrySaved }) => {
   const [title, setTitle] = useState("");
   const [tags, setTags] = useState("");
   const [message, setMessage] = useState("");
@@ -8,7 +8,10 @@ const JournalForm = ({ videoKey }) => {
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    const tagArray = tags.split(",").map(tag => tag.trim()).filter(Boolean);
+    const tagArray = tags
+      .split(",")
+      .map((tag) => tag.trim())
+      .filter(Boolean);
 
     try {
       const res = await fetch("http://localhost:5000/api/entries", {
@@ -19,7 +22,7 @@ const JournalForm = ({ videoKey }) => {
         body: JSON.stringify({
           title,
           tags: tagArray,
-          videoUrl: videoKey || "no-video"
+          videoUrl: videoKey || "no-video",
         }),
       });
 
@@ -27,8 +30,10 @@ const JournalForm = ({ videoKey }) => {
         setMessage("Journal entry saved!");
         setTitle("");
         setTags("");
+
+        if (onEntrySaved) onEntrySaved(); // ✅ Trigger refresh in parent
       } else {
-        setMessage("Error saving entry.");
+        setMessage("Failed to save journal entry.");
       }
     } catch (err) {
       console.error(err);

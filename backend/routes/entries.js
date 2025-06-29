@@ -45,4 +45,18 @@ router.get("/:id", async(req, res) =>{
   }
 });
 
+// DELETE a specific entry by ID
+router.delete("/:id", async (req, res) => {
+  try {
+    const deletedEntry = await Entry.findByIdAndDelete(req.params.id);
+    if (!deletedEntry) {
+      return res.status(404).json({ error: "Entry not found" });
+    }
+    res.json({ message: "Entry deleted", videoKey: deletedEntry.videoUrl });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to delete entry" });
+  }
+});
+
+
 module.exports = router;

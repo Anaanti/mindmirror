@@ -26,3 +26,9 @@ export async function getVideoBlob(key) {
   const result = await db.get(STORE_NAME, key);
   return result?.blob || null;
 }
+
+export async function deleteVideoBlob(key) {
+  const db = await dbPromise;
+  await db.delete(STORE_NAME, key); 
+}
+
