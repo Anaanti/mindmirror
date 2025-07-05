@@ -3,9 +3,10 @@ import { useAuth } from "./AuthContext";
 
 import MainApp from "./MainApp";
 import LoginPage from "./LoginPage";
-console.log("useAuth test:", useAuth);
+
 function App() {
   const { user } = useAuth();
+  console.log("useAuth user:", user);
 
   return (
     <Router>
@@ -20,7 +21,7 @@ function App() {
         />
         <Route
           path="/dashboard"
-          element={user ? <MainApp /> : <Navigate to="/login" />}
+          element={user ? <MainApp user={user} /> : <Navigate to="/login" />}
         />
       </Routes>
     </Router>

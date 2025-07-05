@@ -21,7 +21,7 @@ export default function LoginPage() {
       } else {
         await signInWithEmailAndPassword(auth, email, password);
       }
-      navigate("/"); // Redirect to home
+      navigate("/dashboard"); // Redirect to dashboard
     } catch (err) {
       setError(err.message);
     }

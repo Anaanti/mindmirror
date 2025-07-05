@@ -1,11 +1,14 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { 
-  Play, Pause, Square, Video, Tag, Clock, Target, Award, Search, Trash2, X
+  Play, Pause, Square, Video, Tag, Clock, Target, Award, Search, Trash2, X, User, LogOut 
 } from "lucide-react";
+import { signOut } from "firebase/auth";
+import { useNavigate } from "react-router-dom";
+import { auth } from "./firebase";
 
 // IndexedDB setup
 const DB_NAME = 'MindMirrorDB';
-const DB_VERSION = 2; // Incremented to force upgrade
+const DB_VERSION = 2;
 const ENTRY_STORE = 'entries';
 const VIDEO_STORE = 'videos';
 
@@ -34,12 +37,12 @@ const mindMirrorBackend = {
   entries: [],
   videos: new Map(),
   
-  initialize: async () => {
+  initialize: async (retryCount = 0, maxRetries = 3) => {
     try {
       const db = await openDB();
-      const tx = db.transaction([ENTRY_STORE, VIDEO_STORE], 'readonly');
-      const entryStore = tx.objectStore(ENTRY_STORE);
-      const videoStore = tx.objectStore(VIDEO_STORE);
+      const transaction = db.transaction([ENTRY_STORE, VIDEO_STORE], 'readonly');
+      const entryStore = transaction.objectStore(ENTRY_STORE);
+      const videoStore = transaction.objectStore(VIDEO_STORE);
       
       const entries = await new Promise((resolve, reject) => {
         const request = entryStore.getAll();
@@ -66,24 +69,26 @@ const mindMirrorBackend = {
         console.warn('Videos Map empty despite data in IndexedDB');
       }
       
-      db.close();
+      transaction.oncomplete = () => db.close();
       console.log('IndexedDB initialized:', { entries: entries.length, videos: mindMirrorBackend.videos.size });
     } catch (error) {
       console.error('Error initializing IndexedDB:', error);
-      // Attempt to recreate stores if missing
-      const db = await openDB();
-      const tx = db.transaction([ENTRY_STORE, VIDEO_STORE], 'readwrite');
-      if (!db.objectStoreNames.contains(ENTRY_STORE)) {
-        db.createObjectStore(ENTRY_STORE, { keyPath: '_id' });
-        console.log('Recreated ENTRY_STORE');
+      if (retryCount < maxRetries) {
+        await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1))); // Exponential backoff
+        await mindMirrorBackend.initialize(retryCount + 1, maxRetries);
+      } else {
+        const db = await openDB();
+        if (!db.objectStoreNames.contains(ENTRY_STORE)) {
+          db.createObjectStore(ENTRY_STORE, { keyPath: '_id' });
+          console.log('Recreated ENTRY_STORE');
+        }
+        if (!db.objectStoreNames.contains(VIDEO_STORE)) {
+          const videoStore = db.createObjectStore(VIDEO_STORE, { keyPath: 'key' });
+          videoStore.createIndex('thumbnail', 'thumbnail', { unique: false });
+          console.log('Recreated VIDEO_STORE');
+        }
+        db.close();
       }
-      if (!db.objectStoreNames.contains(VIDEO_STORE)) {
-        const videoStore = db.createObjectStore(VIDEO_STORE, { keyPath: 'key' });
-        videoStore.createIndex('thumbnail', 'thumbnail', { unique: false });
-        console.log('Recreated VIDEO_STORE');
-      }
-      db.close();
-      await mindMirrorBackend.initialize(); // Retry initialization
     }
   },
   
@@ -95,23 +100,33 @@ const mindMirrorBackend = {
       createdAt: new Date().toISOString(),
       duration: entry.duration || "0:00"
     };
-    const tx = db.transaction([ENTRY_STORE], 'readwrite');
-    const store = tx.objectStore(ENTRY_STORE);
-    await new Promise((resolve, reject) => {
+    const transaction = db.transaction([ENTRY_STORE], 'readwrite');
+    const store = transaction.objectStore(ENTRY_STORE);
+    
+    return new Promise((resolve, reject) => {
       const request = store.put(newEntry);
-      request.onsuccess = () => resolve();
-      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        transaction.oncomplete = () => {
+          mindMirrorBackend.entries.unshift(newEntry);
+          db.close();
+          console.log('Entry saved successfully:', newEntry);
+          resolve(newEntry);
+        };
+        transaction.onerror = () => {
+          db.close();
+          reject(new Error('Transaction failed'));
+        };
+      };
+      request.onerror = () => {
+        db.close();
+        reject(request.error);
+      };
     });
-    mindMirrorBackend.entries.unshift(newEntry);
-    db.close();
-    console.log('Entry saved:', newEntry);
-    return newEntry;
   },
   
   getEntries: async () => {
     const db = await openDB();
-    const tx = db.transaction([ENTRY_STORE], 'readonly');
-    const store = tx.objectStore(ENTRY_STORE);
+    const store = db.transaction([ENTRY_STORE], 'readonly').objectStore(ENTRY_STORE);
     const entries = await new Promise((resolve, reject) => {
       const request = store.getAll();
       request.onsuccess = () => resolve(request.result);
@@ -127,8 +142,7 @@ const mindMirrorBackend = {
     if (index !== -1) {
       const entry = mindMirrorBackend.entries[index];
       if (entry.videoUrl && entry.videoUrl !== "no-video") {
-        const videoTx = db.transaction([VIDEO_STORE], 'readwrite');
-        const videoStore = videoTx.objectStore(VIDEO_STORE);
+        const videoStore = db.transaction([VIDEO_STORE], 'readwrite').objectStore(VIDEO_STORE);
         await new Promise((resolve, reject) => {
           const request = videoStore.delete(entry.videoUrl);
           request.onsuccess = () => resolve();
@@ -140,8 +154,7 @@ const mindMirrorBackend = {
         }
         mindMirrorBackend.videos.delete(entry.videoUrl);
       }
-      const tx = db.transaction([ENTRY_STORE], 'readwrite');
-      const store = tx.objectStore(ENTRY_STORE);
+      const store = db.transaction([ENTRY_STORE], 'readwrite').objectStore(ENTRY_STORE);
       await new Promise((resolve, reject) => {
         const request = store.delete(id);
         request.onsuccess = () => resolve();
@@ -163,8 +176,7 @@ const mindMirrorBackend = {
     }
     mindMirrorBackend.videos.set(key, { blob, thumbnail });
     const db = await openDB();
-    const tx = db.transaction([VIDEO_STORE], 'readwrite');
-    const store = tx.objectStore(VIDEO_STORE);
+    const store = db.transaction([VIDEO_STORE], 'readwrite').objectStore(VIDEO_STORE);
     await new Promise((resolve, reject) => {
       const request = store.put({ key, blob, thumbnail });
       request.onsuccess = () => resolve();
@@ -181,8 +193,6 @@ const mindMirrorBackend = {
       try {
         const url = URL.createObjectURL(video.blob);
         console.log('Generated URL for key:', key, 'URL:', url, 'Blob size:', video.blob.size, 'Type:', video.blob.type, 'Blob valid:', video.blob.size > 0);
-        // Fallback test: Copy this URL into a new tab to test playback manually
-        console.log('Test URL manually:', url);
         return url;
       } catch (error) {
         console.error('Failed to create object URL for key:', key, 'Error:', error, 'Blob:', video.blob, 'Blob type:', video.blob.type);
@@ -195,8 +205,7 @@ const mindMirrorBackend = {
   
   getThumbnail: async (key) => {
     const db = await openDB();
-    const tx = db.transaction([VIDEO_STORE], 'readonly');
-    const store = tx.objectStore(VIDEO_STORE);
+    const store = db.transaction([VIDEO_STORE], 'readonly').objectStore(VIDEO_STORE);
     const metadata = await new Promise((resolve, reject) => {
       const request = store.get(key);
       request.onsuccess = () => resolve(request.result);
@@ -242,19 +251,38 @@ const styles = {
   },
   header: {
     textAlign: 'center',
-    marginBottom: '2rem'
+    marginBottom: '2.5rem',
+    padding: '2rem 1rem',
+    background: 'linear-gradient(90deg, rgba(37,99,235,0.1) 0%, rgba(147,51,234,0.1) 100%)',
+    borderRadius: '12px',
+    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.05)',
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    position: 'relative',
+    overflow: 'visible'
   },
   title: {
-    fontSize: '2.5rem',
-    fontWeight: 'bold',
+    fontSize: '3rem',
+    fontWeight: '800',
     background: 'linear-gradient(135deg, #2563eb, #9333ea)',
     WebkitBackgroundClip: 'text',
     WebkitTextFillColor: 'transparent',
-    marginBottom: '0.5rem'
+    margin: '0',
+    textTransform: 'uppercase',
+    letterSpacing: '2px',
+    position: 'relative',
+    zIndex: 2
   },
   subtitle: {
-    color: '#6b7280',
-    fontSize: '1.1rem'
+    color: '#4b5563',
+    fontSize: '1.25rem',
+    fontWeight: '500',
+    marginTop: '0.5rem',
+    opacity: 0.9,
+    position: 'relative',
+    zIndex: 2
   },
   tabContainer: {
     display: 'flex',
@@ -360,12 +388,60 @@ const styles = {
     alignItems: 'center',
     gap: '0.5rem',
     padding: '0.75rem 1.5rem',
-    borderRadius: '8px',
+    borderRadius: '9999px',
     border: 'none',
     fontWeight: '500',
     cursor: 'pointer',
     transition: 'all 0.2s ease',
-    fontSize: '0.875rem'
+    fontSize: '0.875rem',
+    whiteSpace: 'nowrap'
+  },
+  accountButton: {
+    backgroundColor: 'white',
+    border: '1px solid #d1d5db',
+    color: '#374151',
+    position: 'relative',
+    padding: '0.75rem 1rem'
+  },
+  accountPopout: {
+    position: 'absolute',
+    top: '100%',
+    right: 0,
+    backgroundColor: 'white',
+    border: '1px solid #e5e7eb',
+    borderRadius: '8px',
+    boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)',
+    padding: '0.5rem 0',
+    minWidth: '180px',
+    zIndex: 1002,
+    display: 'none',
+    marginTop: '0.25rem'
+  },
+  accountPopoutActive: {
+    display: 'block'
+  },
+  popoutItem: {
+    padding: '0.75rem 1.25rem',
+    fontSize: '0.875rem',
+    color: '#374151',
+    cursor: 'pointer',
+    transition: 'background-color 0.2s ease',
+    ':hover': {
+      backgroundColor: '#f3f4f6'
+    }
+  },
+  popoutItemDanger: {
+    color: '#dc2626',
+    ':hover': {
+      backgroundColor: '#fef2f2'
+    }
+  },
+  logoutButton: {
+    backgroundColor: '#fff0f0',
+    color: '#dc2626',
+    border: '1px solid #fecaca',
+    marginLeft: '0.75rem',
+    padding: '0.75rem 1.25rem'
   },
   primaryButton: {
     backgroundColor: '#2563eb',
@@ -558,7 +634,6 @@ const VideoPlayer = ({ videoKey, onClose }) => {
 
   useEffect(() => {
     let isMounted = true;
-
     const loadVideo = async () => {
       console.log('Attempting to load video for key:', videoKey);
       const url = await mindMirrorBackend.getVideo(videoKey);
@@ -580,12 +655,13 @@ const VideoPlayer = ({ videoKey, onClose }) => {
       }
     };
     window.addEventListener('keydown', handleKeyDown);
-    
+
     return () => {
       isMounted = false;
-      if (videoRef.current && videoRef.current.src) {
-        console.log('Revoking video URL:', videoRef.current.src);
-        URL.revokeObjectURL(videoRef.current.src);
+      const videoElement = videoRef.current;
+      if (videoElement && videoElement.src) {
+        console.log('Revoking video URL:', videoElement.src);
+        URL.revokeObjectURL(videoElement.src);
       }
       window.removeEventListener('keydown', handleKeyDown);
     };
@@ -607,7 +683,6 @@ const VideoPlayer = ({ videoKey, onClose }) => {
           style={styles.closeButton} 
           aria-label="Close video player"
           tabIndex="0"
-          onMouseOver={() => console.log('Close button hovered')}
         >
           <X size={20} />
         </button>
@@ -639,7 +714,7 @@ const VideoRecorder = ({ onRecordingComplete, onError }) => {
   const streamRef = useRef(null);
   const timerRef = useRef(null);
   const recordedChunks = useRef([]);
-  const rawRecordingTime = useRef(0); // Added to track raw timer value
+  const rawRecordingTime = useRef(0);
 
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
@@ -663,7 +738,7 @@ const VideoRecorder = ({ onRecordingComplete, onError }) => {
   }, [cleanup]);
 
   useEffect(() => {
-    console.log('recordingTime updated to:', recordingTime); // Debug state updates
+    console.log('recordingTime updated to:', recordingTime);
   }, [recordingTime]);
 
   const generateThumbnail = async (videoBlob) => {
@@ -751,7 +826,7 @@ const VideoRecorder = ({ onRecordingComplete, onError }) => {
           if (savedKey) {
             console.log('Video saved with key:', savedKey);
             if (onRecordingComplete) {
-              onRecordingComplete(savedKey, formatTime(rawRecordingTime.current)); // Use raw value
+              onRecordingComplete(savedKey, formatTime(rawRecordingTime.current));
             }
           } else {
             console.error('Failed to save video, key not returned');
@@ -771,12 +846,12 @@ const VideoRecorder = ({ onRecordingComplete, onError }) => {
       mediaRecorder.start(1000);
       setIsRecording(true);
       setIsPaused(false);
-      rawRecordingTime.current = 0; // Reset raw time
-      setRecordingTime(0); // Reset to 0 when starting
+      rawRecordingTime.current = 0;
+      setRecordingTime(0);
       setProcessing(false);
       
       timerRef.current = setInterval(() => {
-        rawRecordingTime.current += 1; // Increment raw value
+        rawRecordingTime.current += 1;
         setRecordingTime(prev => {
           const newTime = prev + 1;
           console.log('Recording time updated:', newTime);
@@ -799,7 +874,7 @@ const VideoRecorder = ({ onRecordingComplete, onError }) => {
         mediaRecorderRef.current.resume();
         setIsPaused(false);
         timerRef.current = setInterval(() => {
-          rawRecordingTime.current += 1; // Increment raw value
+          rawRecordingTime.current += 1;
           setRecordingTime(prev => {
             const newTime = prev + 1;
             console.log('Recording time updated:', newTime);
@@ -827,9 +902,9 @@ const VideoRecorder = ({ onRecordingComplete, onError }) => {
         clearInterval(timerRef.current);
         timerRef.current = null;
       }
-      console.log('Stopping recording with final duration:', recordingTime, 'Raw duration:', rawRecordingTime.current); // Enhanced debug log
+      console.log('Stopping recording with final duration:', recordingTime, 'Raw duration:', rawRecordingTime.current);
       if (onRecordingComplete) {
-        onRecordingComplete(`video-${Date.now()}`, formatTime(rawRecordingTime.current)); // Use raw value
+        onRecordingComplete(`video-${Date.now()}`, formatTime(rawRecordingTime.current));
       }
     }
   };
@@ -1027,7 +1102,7 @@ const EntryForm = ({ videoKey, videoDuration, onEntrySaved, onError }) => {
 };
 
 // Main MindMirror Component
-const MindMirrorApp = ({ onClose }) => {
+const MindMirrorApp = ({ user, onClose }) => {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [entries, setEntries] = useState([]);
   const [videoKey, setVideoKey] = useState(null);
@@ -1036,6 +1111,9 @@ const MindMirrorApp = ({ onClose }) => {
   const [selectedTags, setSelectedTags] = useState([]);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [playingVideo, setPlayingVideo] = useState(null);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const accountRef = useRef(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
     console.log('Playing video state updated:', playingVideo);
@@ -1063,8 +1141,10 @@ const MindMirrorApp = ({ onClose }) => {
   }, []);
 
   useEffect(() => {
-    mindMirrorBackend.initialize().then(fetchEntries);
-  }, [refreshTrigger, fetchEntries]);
+    if (user) {
+      mindMirrorBackend.initialize().then(fetchEntries);
+    }
+  }, [refreshTrigger, fetchEntries, user]);
 
   const allTags = Array.from(new Set(entries.flatMap(entry => entry.tags)));
   const filteredEntries = entries.filter(entry => {
@@ -1122,7 +1202,43 @@ const MindMirrorApp = ({ onClose }) => {
     }
   };
 
+  const handleLogout = async () => {
+    try {
+      console.log('Attempting to sign out:', auth.currentUser);
+      await signOut(auth);
+      console.log('Sign out successful, navigating to /login');
+      navigate('/login');
+    } catch (error) {
+      console.error("Error logging out:", error);
+      // Fallback navigation in case signOut fails
+      navigate('/login');
+    }
+  };
+
+  const handlePreferences = () => {
+    console.log("Preferences clicked");
+    setAccountOpen(false);
+    // Implement preferences navigation or modal here
+  };
+
+  // Close popout when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (accountRef.current && !accountRef.current.contains(event.target)) {
+        setAccountOpen(false);
+      }
+    };
+    if (accountOpen) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [accountOpen]);
+
   const renderTabContent = () => {
+    if (!user) return <div style={styles.card}>Please log in to access this page.</div>;
+
     switch (activeTab) {
       case 'dashboard':
         return (
@@ -1207,7 +1323,7 @@ const MindMirrorApp = ({ onClose }) => {
                         )}
                         <button
                           onClick={(e) => {
-                            e.stopPropagation();
+                            e.preventDefault();
                             handleDeleteEntry(entry._id);
                           }}
                           style={styles.deleteButton}
@@ -1292,7 +1408,6 @@ const MindMirrorApp = ({ onClose }) => {
                           border: 'none'
                         }}
                         onClick={() => toggleTag(tag)}
-                        aria-pressed={selectedTags.includes(tag)}
                         aria-label={`Filter by tag ${tag}`}
                       >
                         #{tag}
@@ -1487,8 +1602,56 @@ const MindMirrorApp = ({ onClose }) => {
     <div style={styles.container}>
       <div style={styles.maxWidth}>
         <div style={styles.header}>
-          <h1 style={styles.title}>MindMirror</h1>
-          <p style={styles.subtitle}>Practice, Record, and Improve Your Speaking Skills</p>
+          <div>
+            <h1 style={styles.title}>MindMirror</h1>
+            <p style={styles.subtitle}>Practice, Record, and Improve Your Speaking Skills</p>
+          </div>
+          {user && (
+            <div style={{ display: 'flex', alignItems: 'center', position: 'relative', zIndex: 1001, gap: '0.5rem' }}>
+              <div ref={accountRef} style={{ position: 'relative' }}>
+                <button
+                  onClick={() => {
+                    console.log('Account button clicked, toggling to:', !accountOpen);
+                    setAccountOpen(!accountOpen);
+                  }}
+                  style={{ ...styles.button, ...styles.accountButton, cursor: 'pointer' }}
+                  aria-label="Open account menu"
+                  tabIndex="0"
+                >
+                  <User size={16} /> {user.displayName || user.email || 'User'}
+                </button>
+                <div style={{ ...styles.accountPopout, ...(accountOpen && styles.accountPopoutActive), zIndex: 1002 }}>
+                  <div style={styles.popoutItem} onClick={handlePreferences}>Preferences</div>
+                  <div style={styles.popoutItem} onClick={() => {
+                    console.log('Settings clicked');
+                    setAccountOpen(false);
+                    // Implement settings navigation or modal here
+                  }}>Settings</div>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  console.log('Logout button clicked');
+                  handleLogout();
+                }}
+                style={{ ...styles.button, ...styles.logoutButton, cursor: 'pointer' }}
+                aria-label="Log out"
+                tabIndex="0"
+              >
+                <LogOut size={16} /> Logout
+              </button>
+            </div>
+          )}
+          {/* Optional decorative element */}
+          <div style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            width: '100%',
+            height: '100%',
+            background: 'radial-gradient(circle at 20% 30%, rgba(37,99,235,0.05) 0%, transparent 70%)',
+            zIndex: 1
+          }} />
         </div>
 
         <div style={styles.tabContainer}>
@@ -1506,7 +1669,7 @@ const MindMirrorApp = ({ onClose }) => {
                 ...(activeTab === tab.id ? styles.activeTab : styles.inactiveTab)
               }}
               aria-label={`Switch to ${tab.label} tab`}
-              aria-selected={activeTab === tab.id}
+              disabled={!user}
             >
               {tab.label}
             </button>
