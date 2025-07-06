@@ -6,15 +6,18 @@ import { signOut } from "firebase/auth";
 import { useNavigate } from "react-router-dom";
 import { auth } from "./firebase";
 
-// IndexedDB setup
-const DB_NAME = 'MindMirrorDB';
+// IndexedDB setup with user-specific database name
+const getDBName = (user) => {
+  return user ? `MindMirrorDB_${user.uid}` : 'MindMirrorDB';
+};
 const DB_VERSION = 2;
 const ENTRY_STORE = 'entries';
 const VIDEO_STORE = 'videos';
 
-const openDB = () => {
+const openDB = (user) => {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    const dbName = getDBName(user);
+    const request = indexedDB.open(dbName, DB_VERSION);
     
     request.onupgradeneeded = (event) => {
       const db = event.target.result;
@@ -37,9 +40,9 @@ const mindMirrorBackend = {
   entries: [],
   videos: new Map(),
   
-  initialize: async (retryCount = 0, maxRetries = 3) => {
+  initialize: async (user, retryCount = 0, maxRetries = 3) => {
     try {
-      const db = await openDB();
+      const db = await openDB(user);
       const transaction = db.transaction([ENTRY_STORE, VIDEO_STORE], 'readonly');
       const entryStore = transaction.objectStore(ENTRY_STORE);
       const videoStore = transaction.objectStore(VIDEO_STORE);
@@ -70,30 +73,30 @@ const mindMirrorBackend = {
       }
       
       transaction.oncomplete = () => db.close();
-      console.log('IndexedDB initialized:', { entries: entries.length, videos: mindMirrorBackend.videos.size });
+      console.log('IndexedDB initialized for user:', user?.uid, { entries: entries.length, videos: mindMirrorBackend.videos.size });
     } catch (error) {
-      console.error('Error initializing IndexedDB:', error);
+      console.error('Error initializing IndexedDB for user:', user?.uid, error);
       if (retryCount < maxRetries) {
         await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1))); // Exponential backoff
-        await mindMirrorBackend.initialize(retryCount + 1, maxRetries);
+        await mindMirrorBackend.initialize(user, retryCount + 1, maxRetries);
       } else {
-        const db = await openDB();
+        const db = await openDB(user);
         if (!db.objectStoreNames.contains(ENTRY_STORE)) {
           db.createObjectStore(ENTRY_STORE, { keyPath: '_id' });
-          console.log('Recreated ENTRY_STORE');
+          console.log('Recreated ENTRY_STORE for user:', user?.uid);
         }
         if (!db.objectStoreNames.contains(VIDEO_STORE)) {
           const videoStore = db.createObjectStore(VIDEO_STORE, { keyPath: 'key' });
           videoStore.createIndex('thumbnail', 'thumbnail', { unique: false });
-          console.log('Recreated VIDEO_STORE');
+          console.log('Recreated VIDEO_STORE for user:', user?.uid);
         }
         db.close();
       }
     }
   },
   
-  saveEntry: async (entry) => {
-    const db = await openDB();
+  saveEntry: async (user, entry) => {
+    const db = await openDB(user);
     const newEntry = {
       ...entry,
       _id: Date.now().toString(),
@@ -109,7 +112,7 @@ const mindMirrorBackend = {
         transaction.oncomplete = () => {
           mindMirrorBackend.entries.unshift(newEntry);
           db.close();
-          console.log('Entry saved successfully:', newEntry);
+          console.log('Entry saved successfully for user:', user?.uid, newEntry);
           resolve(newEntry);
         };
         transaction.onerror = () => {
@@ -124,8 +127,8 @@ const mindMirrorBackend = {
     });
   },
   
-  getEntries: async () => {
-    const db = await openDB();
+  getEntries: async (user) => {
+    const db = await openDB(user);
     const store = db.transaction([ENTRY_STORE], 'readonly').objectStore(ENTRY_STORE);
     const entries = await new Promise((resolve, reject) => {
       const request = store.getAll();
@@ -136,8 +139,8 @@ const mindMirrorBackend = {
     return entries;
   },
   
-  deleteEntry: async (id) => {
-    const db = await openDB();
+  deleteEntry: async (user, id) => {
+    const db = await openDB(user);
     const index = mindMirrorBackend.entries.findIndex(e => e._id === id);
     if (index !== -1) {
       const entry = mindMirrorBackend.entries[index];
@@ -162,20 +165,20 @@ const mindMirrorBackend = {
       });
       mindMirrorBackend.entries.splice(index, 1);
       db.close();
-      console.log('Entry deleted:', id);
+      console.log('Entry deleted for user:', user?.uid, id);
       return true;
     }
     db.close();
     return false;
   },
   
-  saveVideo: async (key, blob, thumbnail) => {
+  saveVideo: async (user, key, blob, thumbnail) => {
     if (!(blob instanceof Blob)) {
       console.error('Invalid blob type for key:', key, 'Type:', typeof blob);
       return null;
     }
     mindMirrorBackend.videos.set(key, { blob, thumbnail });
-    const db = await openDB();
+    const db = await openDB(user);
     const store = db.transaction([VIDEO_STORE], 'readwrite').objectStore(VIDEO_STORE);
     await new Promise((resolve, reject) => {
       const request = store.put({ key, blob, thumbnail });
@@ -183,11 +186,11 @@ const mindMirrorBackend = {
       request.onerror = () => reject(request.error);
     });
     db.close();
-    console.log('Video saved:', { key, thumbnail: thumbnail ? 'present' : 'missing', blobSize: blob.size, blobType: blob.type });
+    console.log('Video saved for user:', user?.uid, { key, thumbnail: thumbnail ? 'present' : 'missing', blobSize: blob.size, blobType: blob.type });
     return key;
   },
   
-  getVideo: async (key) => {
+  getVideo: async (user, key) => {
     const video = mindMirrorBackend.videos.get(key);
     if (video?.blob && video.blob instanceof Blob) {
       try {
@@ -203,8 +206,8 @@ const mindMirrorBackend = {
     return null;
   },
   
-  getThumbnail: async (key) => {
-    const db = await openDB();
+  getThumbnail: async (user, key) => {
+    const db = await openDB(user);
     const store = db.transaction([VIDEO_STORE], 'readonly').objectStore(VIDEO_STORE);
     const metadata = await new Promise((resolve, reject) => {
       const request = store.get(key);
@@ -229,31 +232,33 @@ const styleSheet = document.createElement("style");
 styleSheet.innerText = pulseAnimation;
 document.head.appendChild(styleSheet);
 
-// Styles
+// Styles with theme support
 const styles = {
-  container: {
+  container: (theme) => ({
     minHeight: '100vh',
-    background: 'linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 50%, #faf5ff 100%)',
+    background: theme === 'dark' ? '#1f2937' : 'linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 50%, #faf5ff 100%)',
     padding: '1rem',
-    fontFamily: 'system-ui, -apple-system, sans-serif'
-  },
+    fontFamily: 'system-ui, -apple-system, sans-serif',
+    color: theme === 'dark' ? '#d1d5db' : '#1f2937',
+    transition: 'all 0.3s ease'
+  }),
   maxWidth: {
     maxWidth: '1200px',
     margin: '0 auto'
   },
-  card: {
-    backgroundColor: 'white',
+  card: (theme) => ({
+    backgroundColor: theme === 'dark' ? '#374151' : 'white',
     borderRadius: '12px',
     boxShadow: '0 4px 6px rgba(0, 0, 0, 0.07)',
     padding: '1.5rem',
     marginBottom: '1.5rem',
-    border: '1px solid rgba(0, 0, 0, 0.05)'
-  },
-  header: {
+    border: theme === 'dark' ? '1px solid #4b5563' : '1px solid rgba(0, 0, 0, 0.05)'
+  }),
+  header: (theme) => ({
     textAlign: 'center',
     marginBottom: '2.5rem',
     padding: '2rem 1rem',
-    background: 'linear-gradient(90deg, rgba(37,99,235,0.1) 0%, rgba(147,51,234,0.1) 100%)',
+    background: theme === 'dark' ? 'linear-gradient(90deg, rgba(37,99,235,0.2) 0%, rgba(147,51,234,0.2) 100%)' : 'linear-gradient(90deg, rgba(37,99,235,0.1) 0%, rgba(147,51,234,0.1) 100%)',
     borderRadius: '12px',
     boxShadow: '0 4px 12px rgba(0, 0, 0, 0.05)',
     display: 'flex',
@@ -262,8 +267,8 @@ const styles = {
     flexWrap: 'wrap',
     position: 'relative',
     overflow: 'visible'
-  },
-  title: {
+  }),
+  title: (theme) => ({
     fontSize: '3rem',
     fontWeight: '800',
     background: 'linear-gradient(135deg, #2563eb, #9333ea)',
@@ -274,24 +279,24 @@ const styles = {
     letterSpacing: '2px',
     position: 'relative',
     zIndex: 2
-  },
-  subtitle: {
-    color: '#4b5563',
+  }),
+  subtitle: (theme) => ({
+    color: theme === 'dark' ? '#9ca3af' : '#4b5563',
     fontSize: '1.25rem',
     fontWeight: '500',
     marginTop: '0.5rem',
     opacity: 0.9,
     position: 'relative',
     zIndex: 2
-  },
-  tabContainer: {
+  }),
+  tabContainer: (theme) => ({
     display: 'flex',
-    backgroundColor: '#f8fafc',
+    backgroundColor: theme === 'dark' ? '#4b5563' : '#f8fafc',
     borderRadius: '8px',
     padding: '4px',
     marginBottom: '1.5rem',
-    border: '1px solid #e2e8f0'
-  },
+    border: theme === 'dark' ? '1px solid #6b7280' : '1px solid #e2e8f0'
+  }),
   tab: {
     flex: 1,
     padding: '0.75rem 1rem',
@@ -304,39 +309,39 @@ const styles = {
     transition: 'all 0.2s ease',
     textAlign: 'center'
   },
-  activeTab: {
-    backgroundColor: 'white',
+  activeTab: (theme) => ({
+    backgroundColor: theme === 'dark' ? '#6b7280' : 'white',
     color: '#2563eb',
     boxShadow: '0 1px 3px rgba(0, 0, 0, 0.1)'
-  },
-  inactiveTab: {
-    color: '#64748b'
-  },
+  }),
+  inactiveTab: (theme) => ({
+    color: theme === 'dark' ? '#d1d5db' : '#64748b'
+  }),
   statsGrid: {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
     gap: '1rem',
     marginBottom: '1.5rem'
   },
-  statCard: {
-    backgroundColor: 'white',
+  statCard: (theme) => ({
+    backgroundColor: theme === 'dark' ? '#4b5563' : 'white',
     borderRadius: '8px',
     padding: '1rem',
-    border: '1px solid #e2e8f0',
+    border: theme === 'dark' ? '1px solid #6b7280' : '1px solid #e2e8f0',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between'
-  },
-  statNumber: {
+  }),
+  statNumber: (theme) => ({
     fontSize: '1.5rem',
     fontWeight: 'bold',
-    color: '#1f2937'
-  },
-  statLabel: {
+    color: theme === 'dark' ? '#e5e7eb' : '#1f2937'
+  }),
+  statLabel: (theme) => ({
     fontSize: '0.75rem',
-    color: '#6b7280',
+    color: theme === 'dark' ? '#9ca3af' : '#6b7280',
     fontWeight: '500'
-  },
+  }),
   videoContainer: {
     position: 'relative',
     backgroundColor: '#1f2937',
@@ -383,7 +388,7 @@ const styles = {
     gap: '1rem',
     flexWrap: 'wrap'
   },
-  button: {
+  button: (theme) => ({
     display: 'flex',
     alignItems: 'center',
     gap: '0.5rem',
@@ -394,21 +399,24 @@ const styles = {
     cursor: 'pointer',
     transition: 'all 0.2s ease',
     fontSize: '0.875rem',
-    whiteSpace: 'nowrap'
-  },
-  accountButton: {
-    backgroundColor: 'white',
-    border: '1px solid #d1d5db',
-    color: '#374151',
+    whiteSpace: 'nowrap',
+    backgroundColor: theme === 'dark' ? '#4b5563' : 'white',
+    color: theme === 'dark' ? '#e5e7eb' : '#374151',
+    border: theme === 'dark' ? '1px solid #6b7280' : '1px solid #d1d5db'
+  }),
+  accountButton: (theme) => ({
+    backgroundColor: theme === 'dark' ? '#4b5563' : 'white',
+    border: theme === 'dark' ? '1px solid #6b7280' : '1px solid #d1d5db',
+    color: theme === 'dark' ? '#e5e7eb' : '#374151',
     position: 'relative',
     padding: '0.75rem 1rem'
-  },
-  accountPopout: {
+  }),
+  accountPopout: (theme) => ({
     position: 'absolute',
     top: '100%',
     right: 0,
-    backgroundColor: 'white',
-    border: '1px solid #e5e7eb',
+    backgroundColor: theme === 'dark' ? '#374151' : 'white',
+    border: theme === 'dark' ? '1px solid #4b5563' : '1px solid #e5e7eb',
     borderRadius: '8px',
     boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)',
     padding: '0.5rem 0',
@@ -416,102 +424,105 @@ const styles = {
     zIndex: 1002,
     display: 'none',
     marginTop: '0.25rem'
-  },
+  }),
   accountPopoutActive: {
     display: 'block'
   },
-  popoutItem: {
+  popoutItem: (theme) => ({
     padding: '0.75rem 1.25rem',
     fontSize: '0.875rem',
-    color: '#374151',
+    color: theme === 'dark' ? '#d1d5db' : '#374151',
     cursor: 'pointer',
     transition: 'background-color 0.2s ease',
     ':hover': {
-      backgroundColor: '#f3f4f6'
+      backgroundColor: theme === 'dark' ? '#4b5563' : '#f3f4f6'
     }
-  },
-  popoutItemDanger: {
+  }),
+  popoutItemDanger: (theme) => ({
     color: '#dc2626',
     ':hover': {
-      backgroundColor: '#fef2f2'
+      backgroundColor: theme === 'dark' ? '#451a1a' : '#fef2f2'
     }
-  },
-  logoutButton: {
-    backgroundColor: '#fff0f0',
+  }),
+  logoutButton: (theme) => ({
+    backgroundColor: theme === 'dark' ? '#451a1a' : '#fff0f0',
     color: '#dc2626',
-    border: '1px solid #fecaca',
+    border: theme === 'dark' ? '1px solid #6b7280' : '1px solid #fecaca',
     marginLeft: '0.75rem',
     padding: '0.75rem 1.25rem'
-  },
-  primaryButton: {
+  }),
+  primaryButton: (theme) => ({
     backgroundColor: '#2563eb',
     color: 'white'
-  },
-  dangerButton: {
+  }),
+  dangerButton: (theme) => ({
     backgroundColor: '#dc2626',
     color: 'white'
-  },
-  gradientButton: {
+  }),
+  gradientButton: (theme) => ({
     background: 'linear-gradient(135deg, #2563eb, #9333ea)',
     color: 'white'
-  },
-  input: {
+  }),
+  input: (theme) => ({
     width: '100%',
     padding: '0.75rem',
-    border: '1px solid #d1d5db',
+    border: theme === 'dark' ? '1px solid #6b7280' : '1px solid #d1d5db',
     borderRadius: '8px',
     fontSize: '0.875rem',
     outline: 'none',
     transition: 'border-color 0.2s ease',
-    boxSizing: 'border-box'
-  },
+    boxSizing: 'border-box',
+    backgroundColor: theme === 'dark' ? '#4b5563' : 'white',
+    color: theme === 'dark' ? '#d1d5db' : '#374151'
+  }),
   inputGroup: {
     marginBottom: '1rem'
   },
-  label: {
+  label: (theme) => ({
     display: 'block',
     fontSize: '0.875rem',
     fontWeight: '500',
-    color: '#374151',
+    color: theme === 'dark' ? '#9ca3af' : '#374151',
     marginBottom: '0.5rem'
-  },
+  }),
   entriesGrid: {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
     gap: '1rem'
   },
-  entryCard: {
-    border: '1px solid #e5e7eb',
+  entryCard: (theme) => ({
+    border: theme === 'dark' ? '1px solid #4b5563' : '1px solid #e5e7eb',
     borderRadius: '8px',
     overflow: 'hidden',
     transition: 'all 0.2s ease',
-    backgroundColor: 'white',
+    backgroundColor: theme === 'dark' ? '#4b5563' : 'white',
     position: 'relative'
-  },
+  }),
   entryThumbnail: {
     aspectRatio: '16/9',
     backgroundColor: '#f3f4f6',
     position: 'relative',
     overflow: 'hidden'
   },
-  entryContent: {
-    padding: '1rem'
-  },
-  entryTitle: {
+  entryContent: (theme) => ({
+    padding: '1rem',
+    color: theme === 'dark' ? '#d1d5db' : '#1f2937'
+  }),
+  entryTitle: (theme) => ({
     fontSize: '1rem',
     fontWeight: '600',
-    color: '#1f2937',
+    color: theme === 'dark' ? '#e5e7eb' : '#1f2937',
     marginBottom: '0.5rem'
-  },
-  entryMeta: {
+  }),
+  entryMeta: (theme) => ({
     display: 'flex',
     alignItems: 'center',
     gap: '1rem',
     fontSize: '0.75rem',
-    color: '#6b7280',
+    color: theme === 'dark' ? '#9ca3af' : '#6b7280',
     marginBottom: '0.75rem',
     flexWrap: 'wrap'
-  },
+  }),
   metaItem: {
     display: 'flex',
     alignItems: 'center',
@@ -522,19 +533,19 @@ const styles = {
     flexWrap: 'wrap',
     gap: '0.5rem'
   },
-  tag: {
-    backgroundColor: '#dbeafe',
-    color: '#1e40af',
+  tag: (theme) => ({
+    backgroundColor: theme === 'dark' ? '#1e293b' : '#dbeafe',
+    color: theme === 'dark' ? '#93c5fd' : '#1e40af',
     padding: '0.25rem 0.5rem',
     borderRadius: '12px',
     fontSize: '0.75rem',
     fontWeight: '500'
-  },
-  emptyState: {
+  }),
+  emptyState: (theme) => ({
     textAlign: 'center',
     padding: '3rem 1rem',
-    color: '#6b7280'
-  },
+    color: theme === 'dark' ? '#9ca3af' : '#6b7280'
+  }),
   searchContainer: {
     display: 'flex',
     gap: '1rem',
@@ -558,14 +569,14 @@ const styles = {
     transition: 'background-color 0.2s ease',
     zIndex: 10
   },
-  progressBar: {
+  progressBar: (theme) => ({
     width: '100%',
     height: '6px',
-    backgroundColor: '#e5e7eb',
+    backgroundColor: theme === 'dark' ? '#4b5563' : '#e5e7eb',
     borderRadius: '3px',
     overflow: 'hidden',
     marginTop: '0.5rem'
-  },
+  }),
   progressFill: {
     height: '100%',
     backgroundColor: '#2563eb',
@@ -582,23 +593,24 @@ const styles = {
     display: 'flex',
     justifyContent: 'center',
     alignItems: 'center',
-    zIndex: 1000
+    zIndex: 1003
   },
-  modalContent: {
-    backgroundColor: 'white',
+  modalContent: (theme) => ({
+    backgroundColor: theme === 'dark' ? '#374151' : 'white',
     borderRadius: '12px',
     padding: '1.5rem',
     maxWidth: '90vw',
     maxHeight: '90vh',
     overflow: 'auto',
     position: 'relative',
-    zIndex: 1001
-  },
-  closeButton: {
+    zIndex: 1004,
+    width: '400px'
+  }),
+  closeButton: (theme) => ({
     position: 'absolute',
     top: '1rem',
     right: '1rem',
-    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    backgroundColor: theme === 'dark' ? 'rgba(55, 65, 81, 0.9)' : 'rgba(255, 255, 255, 0.9)',
     border: 'none',
     borderRadius: '50%',
     width: '40px',
@@ -609,15 +621,15 @@ const styles = {
     cursor: 'pointer',
     boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
     transition: 'all 0.2s ease',
-    zIndex: 1002,
+    zIndex: 1005,
     outline: 'none',
-    ':hover': { backgroundColor: '#f0f0f0' }
-  }
+    ':hover': { backgroundColor: theme === 'dark' ? '#4b5563' : '#f0f0f0' }
+  })
 };
 
 // Progress Bar Component
-const ProgressBar = ({ value, max = 100 }) => (
-  <div style={styles.progressBar}>
+const ProgressBar = ({ value, max = 100, theme }) => (
+  <div style={styles.progressBar(theme)}>
     <div 
       style={{
         ...styles.progressFill,
@@ -628,7 +640,7 @@ const ProgressBar = ({ value, max = 100 }) => (
 );
 
 // Video Player Component
-const VideoPlayer = ({ videoKey, onClose }) => {
+const VideoPlayer = ({ videoKey, onClose, theme }) => {
   const [videoUrl, setVideoUrl] = useState(null);
   const videoRef = useRef(null);
 
@@ -636,7 +648,7 @@ const VideoPlayer = ({ videoKey, onClose }) => {
     let isMounted = true;
     const loadVideo = async () => {
       console.log('Attempting to load video for key:', videoKey);
-      const url = await mindMirrorBackend.getVideo(videoKey);
+      const url = await mindMirrorBackend.getVideo(auth.currentUser, videoKey);
       if (isMounted && url) {
         setVideoUrl(url);
         console.log('Video URL successfully loaded:', url, 'Key:', videoKey);
@@ -669,7 +681,7 @@ const VideoPlayer = ({ videoKey, onClose }) => {
 
   return (
     <div style={styles.modalOverlay} onClick={onClose}>
-      <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
+      <div style={styles.modalContent(theme)} onClick={(e) => e.stopPropagation()}>
         <button 
           onClick={(e) => {
             e.stopPropagation();
@@ -680,7 +692,7 @@ const VideoPlayer = ({ videoKey, onClose }) => {
               console.error('Error closing video player:', error);
             }
           }} 
-          style={styles.closeButton} 
+          style={styles.closeButton(theme)} 
           aria-label="Close video player"
           tabIndex="0"
         >
@@ -700,7 +712,7 @@ const VideoPlayer = ({ videoKey, onClose }) => {
             onLoadedData={() => console.log('Video loaded successfully:', videoUrl)}
           />
         ) : (
-          <div style={styles.emptyState}>Video not found or failed to load. Please try again.</div>
+          <div style={styles.emptyState(theme)}>Video not found or failed to load. Please try again.</div>
         )}
       </div>
     </div>
@@ -708,7 +720,7 @@ const VideoPlayer = ({ videoKey, onClose }) => {
 };
 
 // Video Recorder Component
-const VideoRecorder = ({ onRecordingComplete, onError }) => {
+const VideoRecorder = ({ onRecordingComplete, onError, theme }) => {
   const videoRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const streamRef = useRef(null);
@@ -822,7 +834,7 @@ const VideoRecorder = ({ onRecordingComplete, onError }) => {
           console.log('Recording stopped, blob created, size:', blob.size, 'type:', mimeType);
           const thumbnail = await generateThumbnail(blob);
           const key = `video-${Date.now()}`;
-          const savedKey = await mindMirrorBackend.saveVideo(key, blob, thumbnail);
+          const savedKey = await mindMirrorBackend.saveVideo(auth.currentUser, key, blob, thumbnail);
           if (savedKey) {
             console.log('Video saved with key:', savedKey);
             if (onRecordingComplete) {
@@ -917,7 +929,7 @@ const VideoRecorder = ({ onRecordingComplete, onError }) => {
   };
 
   return (
-    <div style={styles.card}>
+    <div style={styles.card(theme)}>
       <h3 style={{ fontSize: '1.25rem', fontWeight: '600', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
         <Video color="#2563eb" size={20} />
         Record New Entry
@@ -952,7 +964,7 @@ const VideoRecorder = ({ onRecordingComplete, onError }) => {
           <button
             onClick={startRecording}
             disabled={processing}
-            style={{...styles.button, ...styles.primaryButton}}
+            style={{...styles.button(theme), ...styles.primaryButton(theme)}}
             className="button"
             aria-label="Start recording"
           >
@@ -963,7 +975,7 @@ const VideoRecorder = ({ onRecordingComplete, onError }) => {
           <>
             <button
               onClick={pauseRecording}
-              style={{...styles.button, backgroundColor: '#f59e0b', color: 'white'}}
+              style={{...styles.button(theme), backgroundColor: '#f59e0b', color: 'white'}}
               className="button"
               aria-label={isPaused ? 'Resume recording' : 'Pause recording'}
             >
@@ -972,7 +984,7 @@ const VideoRecorder = ({ onRecordingComplete, onError }) => {
             </button>
             <button
               onClick={stopRecording}
-              style={{...styles.button, ...styles.dangerButton}}
+              style={{...styles.button(theme), ...styles.dangerButton(theme)}}
               className="button"
               aria-label="Stop recording"
             >
@@ -987,7 +999,7 @@ const VideoRecorder = ({ onRecordingComplete, onError }) => {
 };
 
 // Entry Form Component
-const EntryForm = ({ videoKey, videoDuration, onEntrySaved, onError }) => {
+const EntryForm = ({ videoKey, videoDuration, onEntrySaved, onError, theme }) => {
   const [title, setTitle] = useState("");
   const [tags, setTags] = useState("");
   const [loading, setLoading] = useState(false);
@@ -1007,7 +1019,7 @@ const EntryForm = ({ videoKey, videoDuration, onEntrySaved, onError }) => {
         .filter(Boolean);
 
       console.log('Saving entry with duration:', videoDuration);
-      const entry = await mindMirrorBackend.saveEntry({
+      const entry = await mindMirrorBackend.saveEntry(auth.currentUser, {
         title: title.trim(),
         tags: tagArray,
         videoUrl: videoKey || "no-video",
@@ -1032,7 +1044,7 @@ const EntryForm = ({ videoKey, videoDuration, onEntrySaved, onError }) => {
   };
 
   return (
-    <div style={styles.card}>
+    <div style={styles.card(theme)}>
       <h3 style={{ fontSize: '1.25rem', fontWeight: '600', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
         <Tag color="#10b981" size={20} />
         Entry Details
@@ -1051,11 +1063,11 @@ const EntryForm = ({ videoKey, videoDuration, onEntrySaved, onError }) => {
       </h3>
 
       <div style={styles.inputGroup}>
-        <label style={styles.label}>Entry Title *</label>
+        <label style={styles.label(theme)}>Entry Title *</label>
         <input
           type="text"
           placeholder="e.g., Daily Practice, Interview Prep..."
-          style={styles.input}
+          style={styles.input(theme)}
           className="input"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
@@ -1065,11 +1077,11 @@ const EntryForm = ({ videoKey, videoDuration, onEntrySaved, onError }) => {
       </div>
 
       <div style={styles.inputGroup}>
-        <label style={styles.label}>Tags (comma separated)</label>
+        <label style={styles.label(theme)}>Tags (comma separated)</label>
         <input
           type="text"
           placeholder="e.g., pronunciation, confidence, daily"
-          style={styles.input}
+          style={styles.input(theme)}
           className="input"
           value={tags}
           onChange={(e) => setTags(e.target.value)}
@@ -1078,11 +1090,11 @@ const EntryForm = ({ videoKey, videoDuration, onEntrySaved, onError }) => {
 
       {videoDuration && (
         <div style={styles.inputGroup}>
-          <label style={styles.label}>Video Duration</label>
+          <label style={styles.label(theme)}>Video Duration</label>
           <input
             type="text"
             value={videoDuration}
-            style={{ ...styles.input, backgroundColor: '#f3f4f6', cursor: 'not-allowed' }}
+            style={{ ...styles.input(theme), backgroundColor: theme === 'dark' ? '#4b5563' : '#f3f4f6', cursor: 'not-allowed' }}
             readOnly
           />
         </div>
@@ -1091,12 +1103,43 @@ const EntryForm = ({ videoKey, videoDuration, onEntrySaved, onError }) => {
       <button
         onClick={handleSubmit}
         disabled={loading || !title.trim()}
-        style={{...styles.button, ...styles.gradientButton, width: '100%'}}
+        style={{...styles.button(theme), ...styles.gradientButton(theme), width: '100%'}}
         className="button"
         aria-label="Save entry"
       >
         {loading ? "Saving..." : "Save Entry"}
       </button>
+    </div>
+  );
+};
+
+// Preferences Modal Component
+const PreferencesModal = ({ onClose, theme, setTheme }) => {
+  return (
+    <div style={styles.modalOverlay} onClick={onClose}>
+      <div style={styles.modalContent(theme)} onClick={(e) => e.stopPropagation()}>
+        <button 
+          onClick={onClose} 
+          style={styles.closeButton(theme)} 
+          aria-label="Close preferences modal"
+          tabIndex="0"
+        >
+          <X size={20} />
+        </button>
+        <h2 style={{ fontSize: '1.5rem', fontWeight: '600', marginBottom: '1rem', color: theme === 'dark' ? '#e5e7eb' : '#1f2937' }}>Preferences</h2>
+        <div style={styles.inputGroup}>
+          <label style={styles.label(theme)}>Theme</label>
+          <select
+            value={theme}
+            onChange={(e) => setTheme(e.target.value)}
+            style={styles.input(theme)}
+            aria-label="Select theme"
+          >
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </div>
+      </div>
     </div>
   );
 };
@@ -1112,8 +1155,10 @@ const MindMirrorApp = ({ user, onClose }) => {
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [playingVideo, setPlayingVideo] = useState(null);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [preferencesOpen, setPreferencesOpen] = useState(false);
   const accountRef = useRef(null);
   const navigate = useNavigate();
+  const [theme, setTheme] = useState('light');
 
   useEffect(() => {
     console.log('Playing video state updated:', playingVideo);
@@ -1131,18 +1176,20 @@ const MindMirrorApp = ({ user, onClose }) => {
   };
 
   const fetchEntries = useCallback(async () => {
-    try {
-      const data = await mindMirrorBackend.getEntries();
-      setEntries(data);
-      console.log('Entries fetched:', data);
-    } catch (error) {
-      console.error("Error fetching entries:", error);
+    if (user) {
+      try {
+        const data = await mindMirrorBackend.getEntries(user);
+        setEntries(data);
+        console.log('Entries fetched for user:', user.uid, data);
+      } catch (error) {
+        console.error("Error fetching entries for user:", user?.uid, error);
+      }
     }
-  }, []);
+  }, [user]);
 
   useEffect(() => {
     if (user) {
-      mindMirrorBackend.initialize().then(fetchEntries);
+      mindMirrorBackend.initialize(user).then(fetchEntries);
     }
   }, [refreshTrigger, fetchEntries, user]);
 
@@ -1169,11 +1216,13 @@ const MindMirrorApp = ({ user, onClose }) => {
   }, []);
 
   const handleDeleteEntry = async (entryId) => {
-    try {
-      await mindMirrorBackend.deleteEntry(entryId);
-      setRefreshTrigger(prev => prev + 1);
-    } catch (error) {
-      console.error("Error deleting entry:", error);
+    if (user) {
+      try {
+        await mindMirrorBackend.deleteEntry(user, entryId);
+        setRefreshTrigger(prev => prev + 1);
+      } catch (error) {
+        console.error("Error deleting entry for user:", user?.uid, error);
+      }
     }
   };
 
@@ -1216,9 +1265,9 @@ const MindMirrorApp = ({ user, onClose }) => {
   };
 
   const handlePreferences = () => {
-    console.log("Preferences clicked");
+    console.log("Opening Preferences modal");
     setAccountOpen(false);
-    // Implement preferences navigation or modal here
+    setPreferencesOpen(true);
   };
 
   // Close popout when clicking outside
@@ -1237,57 +1286,57 @@ const MindMirrorApp = ({ user, onClose }) => {
   }, [accountOpen]);
 
   const renderTabContent = () => {
-    if (!user) return <div style={styles.card}>Please log in to access this page.</div>;
+    if (!user) return <div style={styles.card(theme)}>Please log in to access this page.</div>;
 
     switch (activeTab) {
       case 'dashboard':
         return (
           <>
             <div style={styles.statsGrid}>
-              <div style={styles.statCard}>
+              <div style={styles.statCard(theme)}>
                 <div>
-                  <div style={styles.statNumber}>{stats.totalEntries}</div>
-                  <div style={styles.statLabel}>Total Entries</div>
+                  <div style={styles.statNumber(theme)}>{stats.totalEntries}</div>
+                  <div style={styles.statLabel(theme)}>Total Entries</div>
                 </div>
                 <Video color="#2563eb" size={24} />
               </div>
-              <div style={styles.statCard}>
+              <div style={styles.statCard(theme)}>
                 <div>
-                  <div style={styles.statNumber}>{Math.round(stats.totalMinutes * 10) / 10}m</div>
-                  <div style={styles.statLabel}>Practice Time</div>
+                  <div style={styles.statNumber(theme)}>{Math.round(stats.totalMinutes * 10) / 10}m</div>
+                  <div style={styles.statLabel(theme)}>Practice Time</div>
                 </div>
                 <Clock color="#10b981" size={24} />
               </div>
-              <div style={styles.statCard}>
+              <div style={styles.statCard(theme)}>
                 <div>
-                  <div style={styles.statNumber}>{stats.currentStreak}</div>
-                  <div style={styles.statLabel}>Day Streak</div>
+                  <div style={styles.statNumber(theme)}>{stats.currentStreak}</div>
+                  <div style={styles.statLabel(theme)}>Day Streak</div>
                 </div>
                 <Award color="#f59e0b" size={24} />
               </div>
-              <div style={styles.statCard}>
+              <div style={styles.statCard(theme)}>
                 <div>
-                  <div style={styles.statNumber}>{stats.weeklyProgress}/{stats.weeklyGoal}</div>
-                  <div style={styles.statLabel}>Weekly Goal</div>
-                  <ProgressBar value={stats.weeklyProgress} max={stats.weeklyGoal} />
+                  <div style={styles.statNumber(theme)}>{stats.weeklyProgress}/{stats.weeklyGoal}</div>
+                  <div style={styles.statLabel(theme)}>Weekly Goal</div>
+                  <ProgressBar value={stats.weeklyProgress} max={stats.weeklyGoal} theme={theme} />
                 </div>
                 <Target color="#8b5cf6" size={24} />
               </div>
             </div>
 
-            <div style={styles.card}>
+            <div style={styles.card(theme)}>
               <h3 style={{ fontSize: '1.25rem', fontWeight: '600', marginBottom: '1rem' }}>
                 Recent Entries
               </h3>
               {entries.length === 0 ? (
-                <div style={styles.emptyState}>
+                <div style={styles.emptyState(theme)}>
                   <Video size={48} style={{ margin: '0 auto 1rem', opacity: 0.5 }} />
                   <p>No entries yet. Start practicing!</p>
                 </div>
               ) : (
                 <div style={styles.entriesGrid}>
                   {entries.slice(0, 3).map(entry => (
-                    <div key={entry._id} style={styles.entryCard}>
+                    <div key={entry._id} style={styles.entryCard(theme)}>
                       <div 
                         style={styles.entryThumbnail} 
                         onClick={(e) => { e.preventDefault(); if (entry.videoUrl !== "no-video") handlePlayVideo(entry.videoUrl); }}
@@ -1333,9 +1382,9 @@ const MindMirrorApp = ({ user, onClose }) => {
                           <Trash2 size={16} />
                         </button>
                       </div>
-                      <div style={styles.entryContent}>
-                        <h4 style={styles.entryTitle}>{entry.title}</h4>
-                        <div style={styles.entryMeta}>
+                      <div style={styles.entryContent(theme)}>
+                        <h4 style={styles.entryTitle(theme)}>{entry.title}</h4>
+                        <div style={styles.entryMeta(theme)}>
                           <div style={styles.metaItem}>
                             <Clock size={12} />
                             {formatDate(entry.createdAt)}
@@ -1347,7 +1396,7 @@ const MindMirrorApp = ({ user, onClose }) => {
                         </div>
                         <div style={styles.tagContainer}>
                           {entry.tags.slice(0, 2).map(tag => (
-                            <span key={tag} style={styles.tag}>#{tag}</span>
+                            <span key={tag} style={styles.tag(theme)}>#{tag}</span>
                           ))}
                         </div>
                       </div>
@@ -1365,12 +1414,14 @@ const MindMirrorApp = ({ user, onClose }) => {
             <VideoRecorder
               onRecordingComplete={handleRecordingComplete}
               onError={(error) => console.error(error)}
+              theme={theme}
             />
             <EntryForm
               videoKey={videoKey}
               videoDuration={videoDuration}
               onEntrySaved={handleEntrySaved}
               onError={(error) => console.error(error)}
+              theme={theme}
             />
           </>
         );
@@ -1378,13 +1429,13 @@ const MindMirrorApp = ({ user, onClose }) => {
       case 'entries':
         return (
           <>
-            <div style={styles.card}>
+            <div style={styles.card(theme)}>
               <div style={styles.searchContainer}>
                 <div style={styles.searchInput}>
                   <input
                     type="text"
                     placeholder="Search entries..."
-                    style={styles.input}
+                    style={styles.input(theme)}
                     className="input"
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
@@ -1395,15 +1446,15 @@ const MindMirrorApp = ({ user, onClose }) => {
 
               {allTags.length > 0 && (
                 <div>
-                  <label style={styles.label}>Filter by tags:</label>
+                  <label style={styles.label(theme)}>Filter by tags:</label>
                   <div style={styles.tagContainer}>
                     {allTags.map(tag => (
                       <button
                         key={tag}
                         style={{
-                          ...styles.tag,
-                          backgroundColor: selectedTags.includes(tag) ? '#2563eb' : '#e5e7eb',
-                          color: selectedTags.includes(tag) ? 'white' : '#374151',
+                          ...styles.tag(theme),
+                          backgroundColor: selectedTags.includes(tag) ? '#2563eb' : (theme === 'dark' ? '#1e293b' : '#e5e7eb'),
+                          color: selectedTags.includes(tag) ? 'white' : (theme === 'dark' ? '#93c5fd' : '#374151'),
                           cursor: 'pointer',
                           border: 'none'
                         }}
@@ -1420,13 +1471,13 @@ const MindMirrorApp = ({ user, onClose }) => {
 
             <div style={styles.entriesGrid}>
               {filteredEntries.length === 0 ? (
-                <div style={{ ...styles.card, ...styles.emptyState, gridColumn: '1 / -1' }}>
+                <div style={{ ...styles.card(theme), ...styles.emptyState(theme), gridColumn: '1 / -1' }}>
                   <Search size={48} style={{ margin: '0 auto 1rem', opacity: 0.5 }} />
                   <p>No entries found. Try adjusting your search or filters.</p>
                 </div>
               ) : (
                 filteredEntries.map(entry => (
-                  <div key={entry._id} style={styles.entryCard} className="entry-card">
+                  <div key={entry._id} style={styles.entryCard(theme)} className="entry-card">
                     <div 
                       style={styles.entryThumbnail} 
                       onClick={(e) => { e.preventDefault(); if (entry.videoUrl !== "no-video") handlePlayVideo(entry.videoUrl); }}
@@ -1472,9 +1523,9 @@ const MindMirrorApp = ({ user, onClose }) => {
                         <Trash2 size={16} />
                       </button>
                     </div>
-                    <div style={styles.entryContent}>
-                      <h4 style={styles.entryTitle}>{entry.title}</h4>
-                      <div style={styles.entryMeta}>
+                    <div style={styles.entryContent(theme)}>
+                      <h4 style={styles.entryTitle(theme)}>{entry.title}</h4>
+                      <div style={styles.entryMeta(theme)}>
                         <div style={styles.metaItem}>
                           <Clock size={12} />
                           {formatDate(entry.createdAt)}
@@ -1486,7 +1537,7 @@ const MindMirrorApp = ({ user, onClose }) => {
                       </div>
                       <div style={styles.tagContainer}>
                         {entry.tags.map(tag => (
-                          <span key={tag} style={styles.tag}>#{tag}</span>
+                          <span key={tag} style={styles.tag(theme)}>#{tag}</span>
                         ))}
                       </div>
                     </div>
@@ -1500,7 +1551,7 @@ const MindMirrorApp = ({ user, onClose }) => {
       case 'statistics':
         return (
           <>
-            <div style={styles.card}>
+            <div style={styles.card(theme)}>
               <h3 style={{ fontSize: '1.25rem', fontWeight: '600', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <Target color="#2563eb" size={20} />
                 Progress Overview
@@ -1509,26 +1560,26 @@ const MindMirrorApp = ({ user, onClose }) => {
               <div style={{ marginBottom: '1.5rem' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
                   <span style={{ fontSize: '0.875rem', fontWeight: '500' }}>Weekly Goal Progress</span>
-                  <span style={{ fontSize: '0.875rem', color: '#6b7280' }}>
+                  <span style={{ fontSize: '0.875rem', color: theme === 'dark' ? '#9ca3af' : '#6b7280' }}>
                     {stats.weeklyProgress}/{stats.weeklyGoal} entries
                   </span>
                 </div>
-                <ProgressBar value={stats.weeklyProgress} max={stats.weeklyGoal} />
+                <ProgressBar value={stats.weeklyProgress} max={stats.weeklyGoal} theme={theme} />
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '1.5rem' }}>
                 <div style={{ textAlign: 'center' }}>
                   <div style={{ fontSize: '2rem', fontWeight: 'bold', color: '#2563eb' }}>{stats.totalEntries}</div>
-                  <div style={{ fontSize: '0.875rem', color: '#6b7280' }}>Total Entries</div>
+                  <div style={{ fontSize: '0.875rem', color: theme === 'dark' ? '#9ca3af' : '#6b7280' }}>Total Entries</div>
                 </div>
                 <div style={{ textAlign: 'center' }}>
                   <div style={{ fontSize: '2rem', fontWeight: 'bold', color: '#10b981' }}>{stats.currentStreak}</div>
-                  <div style={{ fontSize: '0.875rem', color: '#6b7280' }}>Day Streak</div>
+                  <div style={{ fontSize: '0.875rem', color: theme === 'dark' ? '#9ca3af' : '#6b7280' }}>Day Streak</div>
                 </div>
               </div>
             </div>
 
-            <div style={styles.card}>
+            <div style={styles.card(theme)}>
               <h3 style={{ fontSize: '1.25rem', fontWeight: '600', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <Tag color="#8b5cf6" size={20} />
                 Most Used Tags
@@ -1543,11 +1594,11 @@ const MindMirrorApp = ({ user, onClose }) => {
                   return (
                     <div key={tag} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flex: 1 }}>
-                        <span style={styles.tag}>#{tag}</span>
+                        <span style={styles.tag(theme)}>#{tag}</span>
                         <div style={{ 
                           flex: 1,
                           height: '8px',
-                          backgroundColor: '#e5e7eb',
+                          backgroundColor: theme === 'dark' ? '#4b5563' : '#e5e7eb',
                           borderRadius: '4px',
                           overflow: 'hidden'
                         }}>
@@ -1560,7 +1611,7 @@ const MindMirrorApp = ({ user, onClose }) => {
                           }} />
                         </div>
                       </div>
-                      <span style={{ fontSize: '0.875rem', color: '#6b7280', fontWeight: '500' }}>
+                      <span style={{ fontSize: '0.875rem', color: theme === 'dark' ? '#9ca3af' : '#6b7280', fontWeight: '500' }}>
                         {count} {count === 1 ? 'entry' : 'entries'}
                       </span>
                     </div>
@@ -1569,24 +1620,24 @@ const MindMirrorApp = ({ user, onClose }) => {
               </div>
             </div>
 
-            <div style={styles.card}>
+            <div style={styles.card(theme)}>
               <h3 style={{ fontSize: '1.25rem', fontWeight: '600', marginBottom: '1rem' }}>Practice Insights</h3>
-              <p style={{ color: '#6b7280', marginBottom: '1.5rem' }}>Your speaking practice journey</p>
+              <p style={{ color: theme === 'dark' ? '#9ca3af' : '#6b7280', marginBottom: '1.5rem' }}>Your speaking practice journey</p>
               
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1.5rem' }}>
-                <div style={{ textAlign: 'center', padding: '1rem', backgroundColor: '#faf5ff', borderRadius: '8px' }}>
+                <div style={{ textAlign: 'center', padding: '1rem', backgroundColor: theme === 'dark' ? '#4b5563' : '#faf5ff', borderRadius: '8px' }}>
                   <div style={{ fontSize: '2.5rem', fontWeight: 'bold', color: '#8b5cf6' }}>{Math.round(stats.totalMinutes)}</div>
-                  <div style={{ fontSize: '0.875rem', color: '#6b7280', fontWeight: '500' }}>Total Minutes Practiced</div>
+                  <div style={{ fontSize: '0.875rem', color: theme === 'dark' ? '#9ca3af' : '#6b7280', fontWeight: '500' }}>Total Minutes Practiced</div>
                 </div>
-                <div style={{ textAlign: 'center', padding: '1rem', backgroundColor: '#fff7ed', borderRadius: '8px' }}>
+                <div style={{ textAlign: 'center', padding: '1rem', backgroundColor: theme === 'dark' ? '#4b5563' : '#fff7ed', borderRadius: '8px' }}>
                   <div style={{ fontSize: '2.5rem', fontWeight: 'bold', color: '#ea580c' }}>
                     {entries.length > 0 ? Math.round((stats.totalMinutes / stats.totalEntries) * 10) / 10 : 0}
                   </div>
-                  <div style={{ fontSize: '0.875rem', color: '#6b7280', fontWeight: '500' }}>Average Entry Length (min)</div>
+                  <div style={{ fontSize: '0.875rem', color: theme === 'dark' ? '#9ca3af' : '#6b7280', fontWeight: '500' }}>Average Entry Length (min)</div>
                 </div>
-                <div style={{ textAlign: 'center', padding: '1rem', backgroundColor: '#fef2f2', borderRadius: '8px' }}>
+                <div style={{ textAlign: 'center', padding: '1rem', backgroundColor: theme === 'dark' ? '#4b5563' : '#fef2f2', borderRadius: '8px' }}>
                   <div style={{ fontSize: '2.5rem', fontWeight: 'bold', color: '#dc2626' }}>{allTags.length}</div>
-                  <div style={{ fontSize: '0.875rem', color: '#6b7280', fontWeight: '500' }}>Different Practice Areas</div>
+                  <div style={{ fontSize: '0.875rem', color: theme === 'dark' ? '#9ca3af' : '#6b7280', fontWeight: '500' }}>Different Practice Areas</div>
                 </div>
               </div>
             </div>
@@ -1599,12 +1650,12 @@ const MindMirrorApp = ({ user, onClose }) => {
   };
 
   return (
-    <div style={styles.container}>
+    <div style={styles.container(theme)}>
       <div style={styles.maxWidth}>
-        <div style={styles.header}>
+        <div style={styles.header(theme)}>
           <div>
-            <h1 style={styles.title}>MindMirror</h1>
-            <p style={styles.subtitle}>Practice, Record, and Improve Your Speaking Skills</p>
+            <h1 style={styles.title(theme)}>MindMirror</h1>
+            <p style={styles.subtitle(theme)}>Practice, Record, and Improve Your Speaking Skills</p>
           </div>
           {user && (
             <div style={{ display: 'flex', alignItems: 'center', position: 'relative', zIndex: 1001, gap: '0.5rem' }}>
@@ -1614,19 +1665,14 @@ const MindMirrorApp = ({ user, onClose }) => {
                     console.log('Account button clicked, toggling to:', !accountOpen);
                     setAccountOpen(!accountOpen);
                   }}
-                  style={{ ...styles.button, ...styles.accountButton, cursor: 'pointer' }}
+                  style={{ ...styles.button(theme), ...styles.accountButton(theme), cursor: 'pointer' }}
                   aria-label="Open account menu"
                   tabIndex="0"
                 >
                   <User size={16} /> {user.displayName || user.email || 'User'}
                 </button>
-                <div style={{ ...styles.accountPopout, ...(accountOpen && styles.accountPopoutActive), zIndex: 1002 }}>
-                  <div style={styles.popoutItem} onClick={handlePreferences}>Preferences</div>
-                  <div style={styles.popoutItem} onClick={() => {
-                    console.log('Settings clicked');
-                    setAccountOpen(false);
-                    // Implement settings navigation or modal here
-                  }}>Settings</div>
+                <div style={{ ...styles.accountPopout(theme), ...(accountOpen && styles.accountPopoutActive), zIndex: 1002 }}>
+                  <div style={styles.popoutItem(theme)} onClick={handlePreferences}>Preferences</div>
                 </div>
               </div>
               <button
@@ -1634,7 +1680,7 @@ const MindMirrorApp = ({ user, onClose }) => {
                   console.log('Logout button clicked');
                   handleLogout();
                 }}
-                style={{ ...styles.button, ...styles.logoutButton, cursor: 'pointer' }}
+                style={{ ...styles.button(theme), ...styles.logoutButton(theme), cursor: 'pointer' }}
                 aria-label="Log out"
                 tabIndex="0"
               >
@@ -1649,12 +1695,12 @@ const MindMirrorApp = ({ user, onClose }) => {
             left: 0,
             width: '100%',
             height: '100%',
-            background: 'radial-gradient(circle at 20% 30%, rgba(37,99,235,0.05) 0%, transparent 70%)',
+            background: theme === 'dark' ? 'radial-gradient(circle at 20% 30%, rgba(37,99,235,0.1) 0%, transparent 70%)' : 'radial-gradient(circle at 20% 30%, rgba(37,99,235,0.05) 0%, transparent 70%)',
             zIndex: 1
           }} />
         </div>
 
-        <div style={styles.tabContainer}>
+        <div style={styles.tabContainer(theme)}>
           {[
             { id: 'dashboard', label: 'Dashboard' },
             { id: 'record', label: 'Record' },
@@ -1666,7 +1712,7 @@ const MindMirrorApp = ({ user, onClose }) => {
               onClick={() => setActiveTab(tab.id)}
               style={{
                 ...styles.tab,
-                ...(activeTab === tab.id ? styles.activeTab : styles.inactiveTab)
+                ...(activeTab === tab.id ? styles.activeTab(theme) : styles.inactiveTab(theme))
               }}
               aria-label={`Switch to ${tab.label} tab`}
               disabled={!user}
@@ -1681,8 +1727,10 @@ const MindMirrorApp = ({ user, onClose }) => {
           <VideoPlayer
             videoKey={playingVideo}
             onClose={() => setPlayingVideo(null)}
+            theme={theme}
           />
         )}
+        {preferencesOpen && <PreferencesModal onClose={() => setPreferencesOpen(false)} theme={theme} setTheme={setTheme} />}
       </div>
     </div>
   );
