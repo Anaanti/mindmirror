@@ -275,7 +275,6 @@ const styles = {
     WebkitBackgroundClip: 'text',
     WebkitTextFillColor: 'transparent',
     margin: '0',
-    textTransform: 'uppercase',
     letterSpacing: '2px',
     position: 'relative',
     zIndex: 2
