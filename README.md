@@ -52,7 +52,6 @@ MindMirror is a video journaling tool designed to support personal reflection an
 
 - **Simple authentication to keep entries user-specific**  
   Firebase authentication ensures that each user accesses only their own journal data.
-
 - **Designed for daily reflection and growth**  
   MindMirror encourages consistency and mindfulness, helping users track their journey and communication progress over time.
 
@@ -60,7 +59,7 @@ MindMirror is a video journaling tool designed to support personal reflection an
 
 ## Demo
 
-![MindMirror Demo](./media/mind-mirror.gif)
+![MindMirror Demo](media/mind-mirror.gif)
 
 ---
 
