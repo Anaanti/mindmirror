@@ -59,7 +59,8 @@ MindMirror is a video journaling tool designed to support personal reflection an
 
 ## Demo
 
-![MindMirror Demo](media/mind-mirror.gif)
+![MindMirror Demo](media/demo.gif)
+
 
 ---
 
